@@ -1,0 +1,60 @@
+Archival: It queries Cosmos DB for records older than 90 days, writes them to Blob Storage as JSON files, and then removes them from Cosmos DB.
+
+Retrieval: It first tries to read a record from Cosmos DB (hot layer) and, if not found, automatically retrieves it from Blob Storage (archive).
+
+import json, datetime
+from azure.cosmos import CosmosClient, exceptions
+from azure.storage.blob import BlobServiceClient
+
+# === Configuration ===
+COSMOS_URI = "https://<your-cosmos-account>.documents.azure.com:443/"
+COSMOS_KEY = "<your-cosmos-key>"
+DATABASE = "BillingDB"
+CONTAINER = "BillingRecords"
+
+BLOB_CONN_STR = "DefaultEndpointsProtocol=https;AccountName=<your-storage-account>;AccountKey=<your-storage-key>;EndpointSuffix=core.windows.net"
+BLOB_CONTAINER = "billing-archive"
+
+# === Client Initialization ===
+cosmos = CosmosClient(COSMOS_URI, COSMOS_KEY)
+db = cosmos.get_database_client(DATABASE)
+container = db.get_container_client(CONTAINER)
+
+blob_service = BlobServiceClient.from_connection_string(BLOB_CONN_STR)
+blob_container = blob_service.get_container_client(BLOB_CONTAINER)
+
+# === Data Archival Logic ===
+def archive_old_records():
+    # Calculate threshold: 90 days ago
+    threshold = (datetime.datetime.utcnow() - datetime.timedelta(days=90)).isoformat()
+    query = "SELECT * FROM c WHERE c.timestamp < @threshold"
+    params = [{"name": "@threshold", "value": threshold}]
+    
+    for record in container.query_items(query=query, parameters=params, enable_cross_partition_query=True):
+        record_id = record["id"]
+        blob_name = f"{record_id}.json"
+        # Archive record to Blob Storage as JSON
+        blob_container.upload_blob(name=blob_name, data=json.dumps(record), overwrite=True)
+        # Delete record from Cosmos DB (assumes a 'PartitionKey' property exists)
+        container.delete_item(item=record_id, partition_key=record["PartitionKey"])
+        print(f"Archived and removed record: {record_id}")
+
+# === Data Retrieval Logic ===
+def retrieve_record(record_id, partition_key):
+    try:
+        # Look for record in Cosmos DB first
+        return container.read_item(item=record_id, partition_key=partition_key)
+    except exceptions.CosmosResourceNotFoundError:
+        # Fallback: fetch the record from Blob Storage
+        blob_name = f"{record_id}.json"
+        data = blob_container.get_blob_client(blob_name).download_blob().readall()
+        return json.loads(data)
+
+# === Example Execution ===
+if __name__ == "__main__":
+    # Run the archival process (this can be scheduled or triggered as needed)
+    archive_old_records()
+    
+    # Example: Retrieve a record (adjust 'sample_record_id' and 'sample_partition_key')
+    record = retrieve_record("sample_record_id", "sample_partition_key")
+    print("Retrieved record:", record)
