@@ -1,0 +1,62 @@
+Proposed Solution: Tiered Storage with Transparent Data Access
+
+Overview: You separate billing records into two tiers based on age:
+
+Hot Data: Records from the past three months continue to reside in Azure Cosmos DB for low-latency, high-frequency reads.
+
+Cold Data: Records older than three months are periodically migrated to Azure Blob Storage, which offers significantly lower storage costs.
+
+Implementation Steps
+Automated Data Migration:
+
+Periodic Scanning: Use an Azure Function with a timer trigger to run at regular intervals.
+
+Identification: The function queries Cosmos DB for billing records older than three months using a timestamp filter.
+
+Migration: Each identified record (up to 300 KB in size) is exported—serialized to JSON—and stored in a designated container in Azure Blob Storage.
+
+Verification & Cleanup: Once the record is successfully copied (with checksum verification or other integrity checks), the record is deleted from Cosmos DB to free up expensive storage.
+
+Data Access Layer Adjustment:
+
+Unified Read Logic: Introduce a lightweight logic layer behind your API. Upon receiving a record request, this layer first queries Cosmos DB.
+
+Fallback to Archive: If the record isn’t found (implying it has been migrated), it then queries Azure Blob Storage and returns the result.
+
+Seamless Integration: Since this change is confined to the backend’s data retrieval mechanism, the API endpoints exposed to clients remain exactly the same, ensuring no impact on consumers.
+
+Monitoring & Error Handling:
+
+Azure Monitor/Application Insights: Track the migration process and record query performance.
+
+Robust Error Handling: Incorporate retry mechanisms and logging in the Azure Function to safeguard against transient failures, ensuring no data loss
+
+flowchart TD
+    subgraph "Client & API Layer"
+        A[Client Request] --> B[API Gateway / Existing API]
+    end
+
+    subgraph "Data Access Layer"
+        B --> C{Record Lookup}
+        C -- "Record Found" --> D[Azure Cosmos DB<br/>(Hot Data)]
+        C -- "Record Not Found" --> E[Azure Blob Storage<br/>(Cold Data)]
+        D --> B
+        E --> B
+    end
+
+    subgraph "Data Migration Process"
+        F[Azure Function<br/>(Timer Trigger)]
+        F --> G[Query Cosmos DB for records<br/>older than 3 months]
+        G --> H[Store records in Blob Storage]
+        H --> I[Verify and delete records from Cosmos DB]
+    end
+
+Diagram Explanation:
+
+Client & API Layer: Clients continue to send requests to your unchanged API endpoint.
+
+Data Access Layer: The API now routes its read operations through a lookup mechanism that checks Cosmos DB first (for recent records). If the record isn’t found, it queries the Blob Storage where older records are archived.
+
+Data Migration Process: An Azure Function, activated on a schedule, scans for records in Cosmos DB older than three months, migrates them to Blob Storage, and safely removes them from Cosmos DB after verification.
+
+
